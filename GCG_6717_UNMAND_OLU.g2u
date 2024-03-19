@@ -1,0 +1,159 @@
+Program.Sub.Preflight.Start
+Program.Sub.Preflight.End
+
+'ARC 6717
+'Cust: SEATING DYNAMICS
+
+'hook: 38120 - OLU PRE-PROCESS
+'
+'This script runs at OLU Pre-process, to look for UNMAND SEQ in JOBS_IN_PROCESS
+'	- change EMPID to phantom 99999
+'	- recalculate RATE_MACHINE, LABOR_DOLLARS, SCRAP_DOLLARS, OVERHEAD_DOLLARS
+'	- replace HOURS with STD_HOURS (Standard hours for this SEQ)
+
+Program.Sub.Main.Start
+f.Intrinsic.Control.Try
+	v.Local.sSQL.Declare(String)
+	v.Local.sRet.Declare(String)
+	v.Local.iCounter.Declare(Long)
+	
+	v.Local.fRateEmp.Declare(Float)
+	v.Local.fRateMachine.Declare(Float)
+	v.Local.fLaborDollar.Declare(Float)
+	v.Local.fOverheadDollar.Declare(Float)
+	v.Local.fHours.Declare(Float)
+	v.Local.fHourStd.Declare(Float)
+	v.Local.sHour4demical.Declare(String)
+	
+	v.Local.sEmpID.Declare(String)
+	v.Local.sEmpName.Declare(String)
+	v.Local.sEmpIN.Declare(String)
+	
+	v.Local.fUnits.Declare(Float)
+	v.Local.fDollarEst.Declare(Float)
+	v.Local.fRateOverhead.Declare(Float)
+	v.Local.fGoodPiece.Declare(Float)
+	
+	v.Local.sKeys.Declare(String)
+	
+	v.Local.bRecordMatch.Declare(Boolean)
+	
+	v.Local.sEmpID.Set("99999")
+	v.Local.sEmpIN.Set("PHT")
+	v.Local.sEmpName.Set("Phantom")
+	
+	'exit if not hook 38120
+	f.Intrinsic.Control.If(v.Caller.Hook,!=,"38120")
+		f.Intrinsic.Control.End
+	f.Intrinsic.Control.EndIf
+	
+	
+	v.Local.bRecordMatch.Set(False)
+	
+		
+	'July 27 - Add a check and loop to ensure number of records match when the script starts and ends
+	'-----------------------------------------------------
+	f.Intrinsic.Control.DoUntil(v.Local.bRecordMatch)
+
+		'get list of UNMAND from JOBS_IN_PROCESS
+		v.Local.sSQL.Set("select A.*, B.UNITS_OPEN, B.DOLLARS_ESTIMATED from JOBS_IN_PROCESS A left join V_JOB_OPERATIONS B on RTRIM(A.JOB) = RTRIM(B.JOB) and RTRIM(A.SUFFIX) = RTRIM(B.SUFFIX) and A.SEQUENCE = B.SEQ where RTRIM(B.OPERATION) = 'UNMAND' and B.UNITS_OPEN<>0 and A.FLAG_INDIRECT <> 'S'")
+		
+		f.ODBC.Connection!Con.OpenCompanyConnection
+			f.Intrinsic.Control.If(v.DataTable.dtJob.Exists)
+				f.Data.Datatable.Close("dtJob")
+			f.Intrinsic.Control.EndIf
+			f.Data.Datatable.CreateFromSQL("dtJob", "con", v.Local.sSQL, True)
+		f.ODBC.Connection!Con.Close
+			
+		'check if there are any UNMAND
+		'	only continue if there is at least 1 record
+		f.Intrinsic.Control.If(v.DataTable.dtJob.RowCount,>,0)
+			
+			'loop thru records and recalculate
+			f.Intrinsic.Control.For(v.Local.iCounter, 0, v.DataTable.dtJob.RowCount--,1)
+				v.Local.fRateEmp.Set(v.DataTable.dtJob(v.Local.iCounter).RATE_EMPLOYEE!FieldVal)
+				v.Local.fRateMachine.Set(v.DataTable.dtJob(v.Local.iCounter).RATE_MACHINE!FieldVal)
+				v.Local.fHours.Set(v.DataTable.dtJob(v.Local.iCounter).HOURS!FieldVal)
+				v.Local.fHourStd.Set(v.DataTable.dtJob(v.Local.iCounter).STD_HOURS!FieldVal)
+				
+				v.Local.fUnits.Set(v.DataTable.dtJob(v.Local.iCounter).UNITS_OPEN!FieldVal)
+				v.Local.fDollarEst.Set(v.DataTable.dtJob(v.Local.iCounter).DOLLARS_ESTIMATED!FieldVal)
+				v.Local.fGoodPiece.Set(v.DataTable.dtJob(v.Local.iCounter).PIECES_GOOD!FieldVal)
+				
+				f.Intrinsic.Control.If(v.Local.iCounter,=,0)
+					f.Intrinsic.String.Build("'{0}-{1}-{2}-{3}-{4}-{5}'", v.DataTable.dtJob(v.Local.iCounter).EMPLOYEE!FieldValTrim, v.DataTable.dtJob(v.Local.iCounter).SEQUENCE_KEY!FieldValTrim, v.DataTable.dtJob(v.Local.iCounter).TERMINAL_NO!FieldValTrim,v.DataTable.dtJob(v.Local.iCounter).JOB!FieldValTrim,v.DataTable.dtJob(v.Local.iCounter).SUFFIX!FieldValTrim,v.DataTable.dtJob(v.Local.iCounter).SEQUENCE!FieldValTrim, v.Local.sKeys)
+				f.Intrinsic.Control.Else
+					f.Intrinsic.String.Build("{0},'{1}-{2}-{3}-{4}-{5}-{6}'", v.Local.sKeys, v.DataTable.dtJob(v.Local.iCounter).EMPLOYEE!FieldValTrim, v.DataTable.dtJob(v.Local.iCounter).SEQUENCE_KEY!FieldValTrim, v.DataTable.dtJob(v.Local.iCounter).TERMINAL_NO!FieldValTrim,v.DataTable.dtJob(v.Local.iCounter).JOB!FieldValTrim,v.DataTable.dtJob(v.Local.iCounter).SUFFIX!FieldValTrim,v.DataTable.dtJob(v.Local.iCounter).SEQUENCE!FieldValTrim, v.Local.sKeys)
+				f.Intrinsic.Control.EndIf
+				
+				'Recalculations
+				'RATE_MACHINE = RATE_MACHINE-RATE_EMPPLOYEE
+				f.Intrinsic.Math.Sub(v.Local.fRateMachine,v.Local.fRateEmp,v.Local.fRateMachine)
+				
+				'RATE_EMPLOYEE => set to $0/h
+				v.Local.fRateEmp.Set(0)				
+				
+				'LABOR DOLLARS => set to $0/h
+				v.Local.fLaborDollar.Set(0)
+				
+				'OVERHEAD DOLLARS
+	'				f.Intrinsic.Math.Mult(v.Local.fRateMachine,v.Local.fHourStd, v.Local.fOverheadDollar)
+				f.Intrinsic.Math.Div(v.Local.fDollarEst,v.Local.fUnits,v.Local.fRateOverhead)
+				f.Intrinsic.Math.Mult(v.Local.fRateOverhead,v.Local.fGoodPiece,v.Local.fOverheadDollar)
+				
+				'Hours
+				v.Local.fHours.Set(v.Local.fHourStd)
+				
+				'set values
+				'July 27 - reindex SEQUENCE_KEY
+				f.Data.Datatable.SetValue("dtJob", v.Local.iCounter, "EMPLOYEE",v.Local.sEmpID, "HOURS",v.Local.fHours, "RATE_MACHINE",v.Local.fRateMachine, "RATE_EMPLOYEE",v.Local.fRateEmp, "LABOR_DOLLARS", v.Local.fLaborDollar, "OVERHEAD_DOLLARS",v.Local.fOverheadDollar, "EMPLOYEE_NAME", v.Local.sEmpName, "SEQUENCE_KEY", v.Local.iCounter)
+			f.Intrinsic.Control.Next(v.Local.iCounter)
+			
+			v.Local.sSQL.Set("select A.*, B.UNITS_OPEN, B.DOLLARS_ESTIMATED from JOBS_IN_PROCESS A left join V_JOB_OPERATIONS B on RTRIM(A.JOB) = RTRIM(B.JOB) and RTRIM(A.SUFFIX) = RTRIM(B.SUFFIX) and A.SEQUENCE = B.SEQ where RTRIM(B.OPERATION) = 'UNMAND' and B.UNITS_OPEN<>0 and A.FLAG_INDIRECT <> 'S'")
+			
+			f.ODBC.Connection!Con.OpenCompanyConnection
+				f.Intrinsic.Control.If(v.DataTable.dtJobCompare.Exists)
+					f.Data.Datatable.Close("dtJobCompare")
+				f.Intrinsic.Control.EndIf
+				f.Data.Datatable.CreateFromSQL("dtJobCompare", "con", v.Local.sSQL, True)
+			f.ODBC.Connection!Con.Close
+			
+			f.Intrinsic.Control.If(v.DataTable.dtJob.RowCount,=,v.DataTable.dtJobCompare.RowCount)
+				v.Local.bRecordMatch.Set(True)
+			f.Intrinsic.Control.EndIf
+		
+		'else: no record => end
+		f.Intrinsic.Control.Else
+			f.Intrinsic.Control.End			
+		f.Intrinsic.Control.EndIf
+	f.Intrinsic.Control.Loop
+	'-----------------------------------------------------
+	
+
+	
+	'drops columns
+	f.Data.Datatable.RemoveColumn("dtJob", "UNITS_OPEN")
+	f.Data.Datatable.RemoveColumn("dtJob", "DOLLARS_ESTIMATED")
+	
+		'check if number of records match before delete
+		'if match => delete
+		'if not => start over
+	f.ODBC.Connection!Con.OpenCompanyConnection
+		f.Intrinsic.String.Build("delete from JOBS_IN_PROCESS where RTRIM(EMPLOYEE)+'-'+CAST(SEQUENCE_KEY as NVARCHAR)+'-'+RTRIM(TERMINAL_NO)+'-'+RTRIM(JOB)+'-'+RTRIM(SUFFIX)+'-'+RTRIM(SEQUENCE) in ({0})",v.Local.sKeys, v.Local.sSQL)
+		f.ODBC.Connection!Con.Execute(v.Local.sSQL)
+		f.Data.Datatable.SaveToDB("dtJob", "con", "JOBS_IN_PROCESS", "EMPLOYEE*!*SEQUENCE_KEY*!*TERMINAL_NO*!*JOB*!*SUFFIX*!*SEQUENCE", 128)
+	f.ODBC.Connection!Con.Close
+
+		
+	v.Local.sSQL.Set("END OF SCRIPT")
+			
+f.Intrinsic.Control.Catch
+	f.Intrinsic.UI.Msgbox(v.Ambient.ErrorDescription)
+	'change to using Log
+f.Intrinsic.Control.EndTry
+Program.Sub.Main.End
+
+Program.Sub.Comments.Start
+${$5$}$3.0.0.0$}$1
+${$6$}$nle$}$20220727185733975$}$kjzCRYkA6UEoRnCwndYnRRprGWLiMW8tA7Un8Csl3BQMHmWwa4bfJj1eoIYtXjVq
+Program.Sub.Comments.End
